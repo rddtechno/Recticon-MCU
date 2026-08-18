@@ -21,7 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "eeprom_24lc08.h"
+#include "ads1115.h"
+#include "mcp4725.h"
+#include "i2c_scan.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -111,7 +114,12 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+#ifdef DEBUG
+  /* IWDG default TETAP berjalan saat core di-halt debugger. Tanpa freeze ini,
+     berhenti di breakpoint lebih dari ~33 s memicu reset dan memutus sesi
+     debug. Hanya untuk build Debug. */
+  __HAL_DBGMCU_FREEZE_IWDG();
+#endif
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -128,7 +136,25 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
+  /* Pindai bus dulu, sebelum device apa pun disentuh - hasilnya di
+     g_i2c_found[] / g_i2c_found_count (lihat Live Expressions). */
+  I2C_ScanInit(&hi2c1);
+  I2C_ScanRun();
 
+  EE_Init(&hi2c1);
+
+  /* Hasil kedua baris ini langsung terbaca di Live Expressions:
+       g_ee_present     -> 1 = chip menjawab di bus I2C
+       g_ee_last_result -> 0 = EE_OK, tulis/baca/verifikasi sukses */
+  g_ee_present     = (uint8_t)(EE_IsReady() ? 1U : 0U);
+  g_ee_last_result = (int8_t)EE_SelfTest();
+
+  /* --- Device lain di bus I2C1 yang sama --- */
+  ADS_Init(&hi2c1);
+  MCP_Init(&hi2c1);
+
+  g_ads_present = (uint8_t)(ADS_IsReady() ? 1U : 0U);
+  g_dac_present = (uint8_t)(MCP_IsReady() ? 1U : 0U);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -138,6 +164,18 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Eksekusi perintah yang di-set dari Live Expressions (g_ee_cmd) */
+    EE_Task();
+
+    /* Akuisisi LOAD V / LOAD I bergantian - non-blocking */
+    ADS_Task();
+
+    /* Ikuti perubahan g_dac_setpoint + eksekusi g_dac_cmd */
+    MCP_Task();
+
+    /* IWDG aktif sejak MX_IWDG_Init() dengan timeout ~32.8 s. Tanpa refresh
+       ini board reset sendiri secara periodik. */
+    HAL_IWDG_Refresh(&hiwdg);
   }
   /* USER CODE END 3 */
 }
@@ -347,7 +385,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -385,7 +423,7 @@ static void MX_SPI3_Init(void)
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -617,29 +655,33 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, DO_RLY_VIN_Pin|DO_SYS_RUN_Pin|DO_SYS_ALM_Pin|DO_BMS2_Pin
-                          |DO_LCD_A0_Pin|DO_LCD_RST_Pin|DO_RS232_EN_CLK_EN_HUM_Pin, GPIO_PIN_RESET);
+                          |DO_LCD_A0_Pin|DO_LCD_RST_Pin|DO_RS485_2_DE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOH, DO_BMS_EN_Pin|DO_BMS1_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, DO_BMS3_Pin|DO_USART2_MUX_Pin|DO_FUEL_EN_Pin|DO_OPI_PWR_Pin
-                          |DI_FAN_IOEXP_RST_Pin|DI_DOOR_SPI3_CS0_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, DO_BMS3_Pin|DO_USART2_MUX_Pin|DO_RS485_1_DE_Pin|DO_OPI_PWR_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, DO_LCD_CS_Pin|DO_RS232_MUXA_Pin|DO_RS232_MUXB_DI_OPI_TICK_Pin|DO_LVD_VSAT_Pin
-                          |DO_EEPROM_WP_Pin|DIO_AUX2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, DO_LCD_CS_Pin|DO_RS232_MUXA_Pin|DO_RS232_MUXB_DI_OPI_TICK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DIO_AUX0_GPIO_Port, DIO_AUX0_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(DO_ADC_CS_GPIO_Port, DO_ADC_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DO_LVD_BTS_SPI3_CS1_GPIO_Port, DO_LVD_BTS_SPI3_CS1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, DO_IOEXP_DO_RST_Pin|DO_IOEXP_DO_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(DO_IOEXP_DI_CS_GPIO_Port, DO_IOEXP_DI_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, DO_IOEXP_DI_RST_Pin|DO_EEPROM_WP_Pin|DO_ADC_RST_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : DO_RLY_VIN_Pin DO_SYS_RUN_Pin DO_SYS_ALM_Pin DO_BMS2_Pin
-                           DO_LCD_A0_Pin DO_LCD_RST_Pin DO_RS232_EN_CLK_EN_HUM_Pin */
+                           DO_LCD_A0_Pin DO_LCD_RST_Pin DO_RS485_2_DE_Pin */
   GPIO_InitStruct.Pin = DO_RLY_VIN_Pin|DO_SYS_RUN_Pin|DO_SYS_ALM_Pin|DO_BMS2_Pin
-                          |DO_LCD_A0_Pin|DO_LCD_RST_Pin|DO_RS232_EN_CLK_EN_HUM_Pin;
+                          |DO_LCD_A0_Pin|DO_LCD_RST_Pin|DO_RS485_2_DE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -652,10 +694,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DO_BMS3_Pin DO_USART2_MUX_Pin DO_FUEL_EN_Pin DO_OPI_PWR_Pin
-                           DI_FAN_IOEXP_RST_Pin DI_DOOR_SPI3_CS0_Pin */
-  GPIO_InitStruct.Pin = DO_BMS3_Pin|DO_USART2_MUX_Pin|DO_FUEL_EN_Pin|DO_OPI_PWR_Pin
-                          |DI_FAN_IOEXP_RST_Pin|DI_DOOR_SPI3_CS0_Pin;
+  /*Configure GPIO pins : DO_BMS3_Pin DO_USART2_MUX_Pin DO_RS485_1_DE_Pin DO_OPI_PWR_Pin
+                           DO_IOEXP_DO_RST_Pin DO_IOEXP_DO_CS_Pin */
+  GPIO_InitStruct.Pin = DO_BMS3_Pin|DO_USART2_MUX_Pin|DO_RS485_1_DE_Pin|DO_OPI_PWR_Pin
+                          |DO_IOEXP_DO_RST_Pin|DO_IOEXP_DO_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -683,34 +725,34 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
   HAL_GPIO_Init(DI_BTN_UP_PM2_ZX_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DO_LCD_CS_Pin DO_RS232_MUXA_Pin DO_RS232_MUXB_DI_OPI_TICK_Pin DO_LVD_VSAT_Pin
-                           DO_EEPROM_WP_Pin DIO_AUX2_Pin */
-  GPIO_InitStruct.Pin = DO_LCD_CS_Pin|DO_RS232_MUXA_Pin|DO_RS232_MUXB_DI_OPI_TICK_Pin|DO_LVD_VSAT_Pin
-                          |DO_EEPROM_WP_Pin|DIO_AUX2_Pin;
+  /*Configure GPIO pins : DO_LCD_CS_Pin DO_RS232_MUXA_Pin DO_RS232_MUXB_DI_OPI_TICK_Pin DO_IOEXP_DI_RST_Pin
+                           DO_EEPROM_WP_Pin DO_ADC_RST_Pin */
+  GPIO_InitStruct.Pin = DO_LCD_CS_Pin|DO_RS232_MUXA_Pin|DO_RS232_MUXB_DI_OPI_TICK_Pin|DO_IOEXP_DI_RST_Pin
+                          |DO_EEPROM_WP_Pin|DO_ADC_RST_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DIO_AUX0_Pin */
-  GPIO_InitStruct.Pin = DIO_AUX0_Pin;
+  /*Configure GPIO pin : DO_ADC_CS_Pin */
+  GPIO_InitStruct.Pin = DO_ADC_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(DIO_AUX0_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(DO_ADC_CS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DIO_AUX1_Pin */
-  GPIO_InitStruct.Pin = DIO_AUX1_Pin;
+  /*Configure GPIO pin : DI_ADC_DRDY_Pin */
+  GPIO_InitStruct.Pin = DI_ADC_DRDY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(DIO_AUX1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(DI_ADC_DRDY_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : DO_LVD_BTS_SPI3_CS1_Pin */
-  GPIO_InitStruct.Pin = DO_LVD_BTS_SPI3_CS1_Pin;
+  /*Configure GPIO pin : DO_IOEXP_DI_CS_Pin */
+  GPIO_InitStruct.Pin = DO_IOEXP_DI_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(DO_LVD_BTS_SPI3_CS1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(DO_IOEXP_DI_CS_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 10, 0);

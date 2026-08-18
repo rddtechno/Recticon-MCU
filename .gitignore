@@ -1,0 +1,12 @@
+# Artefak build STM32CubeIDE
+/Debug/
+/Release/
+
+# Backup & file sementara
+*.bak
+*.orig
+*.corrupt
+
+# File lokal IDE / workspace
+.settings/
+*.launch

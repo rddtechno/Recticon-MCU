@@ -1,0 +1,33 @@
+Kita akan membuat project rectifier controller menggunakan uC stm32f412.Pada tahan ini kita akan assign semua pinnya,analisa dulu file .ioc,setelah kamu analisa kita akan buat pin assigment nya
+
+1.	EEPROM untuk menyimpan konfigurasi,menggunakan HG24LC08 di I2C1,PB8 adalah pin Write Protected
+2.	MCP23S17 di pakai sebagai Digital input dan digital Outpu terdapat 2 chip MCP23S17, 1 chip untuk digital input,dan satu lagi untuk digital output,SPI yang di pakai adalah SPI3.Untuk digital input,pin CS dan Reset yang di pakai adalah PD2 dan PB3.Untuk digital output,pin CS dan pin Reset yang di pakai adalah PA15 dan PA12.
+3.	2 Port RS485 untuk protcol modbus :	# 	Modbus Master untuk komunikasi dengan Power meter dan juga board SinePower ST36
+											## Serial:USART2
+											## Pin Tranceiver:PA4
+										# 	Modbus Slave untuk komunukasi dengan HMI
+											## Serial:USART6
+											## Pin Tranceiver:PC8
+4.	1 port TTL untuk protocol modbus : 	#	Modbus Slave untuk komunikasi dengan orange pi Zero3
+5.	ADS1115 untuk membaca Tegangan LOAD dan Arus Load dengan konfigurasi seperti ini : 	# I2C : i2c1
+																						# LOAD Voltage :	## 	MUX MODE0
+																											##	FSR 2048
+																											##	SPS	860
+																						# LOAD Current :	## 	MUX MODE3
+																											##	FSR 2048
+																											##	SPS	860
+6. ADS131M04 untuk membaca tegangan rectifier,tegangan batre,arus rectifier,arus baterai dengan konfigurasi seperti ini :	#	SPI 		:	SPI1
+																															#	Pin DRDY 	:	PA8
+																															# 	Pin Reset	:	PB9
+																															#	Pin CS		:	PC9
+																															#	Rectifier Voltage	:	##	channel : 0
+																																						##	FSR		: 1.2V	
+																															#	Rectifier Current	: 	##	channel : 1
+																																						##	FSR		: 300 mV
+																															#	Battery Voltage	:		##	channel : 2
+																																						##	FSR		: 1.2V	
+																															#	Battery Current	: 		##	channel : 3
+																																						##	FSR		: 300 mV	
+																															#	SPS : 64kSPS
+7. MCP4725 sebagai DAC
+											
