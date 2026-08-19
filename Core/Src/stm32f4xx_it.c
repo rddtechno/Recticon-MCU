@@ -223,6 +223,20 @@ void DMA1_Stream6_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles EXTI line4 interrupt.
+  */
+void EXTI4_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI4_IRQn 0 */
+
+  /* USER CODE END EXTI4_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(DI_IOEXP_INTA_Pin);
+  /* USER CODE BEGIN EXTI4_IRQn 1 */
+
+  /* USER CODE END EXTI4_IRQn 1 */
+}
+
+/**
   * @brief This function handles EXTI line[9:5] interrupts.
   */
 void EXTI9_5_IRQHandler(void)
@@ -230,7 +244,12 @@ void EXTI9_5_IRQHandler(void)
   /* USER CODE BEGIN EXTI9_5_IRQn 0 */
 
   /* USER CODE END EXTI9_5_IRQn 0 */
-  HAL_GPIO_EXTI_IRQHandler(DO_RS485_2_DE_Pin);
+  /* Nama makro di bawah menyesatkan tapi nilainya benar: HAL_GPIO_EXTI_IRQHandler()
+     memakai NOMOR pin, bukan port. DO_LCD_RST_Pin = GPIO_PIN_5 -> melayani jalur
+     EXTI5 = PB5 (DI_IOEXP_INTB), dan DO_RS485_2_DE_Pin = GPIO_PIN_8 -> EXTI8 = PA8
+     (DI_ADC_DRDY). Ditulis ulang pakai nama yang sebenarnya. */
+  HAL_GPIO_EXTI_IRQHandler(DI_IOEXP_INTB_Pin);
+  HAL_GPIO_EXTI_IRQHandler(DI_ADC_DRDY_Pin);
   /* USER CODE BEGIN EXTI9_5_IRQn 1 */
 
   /* USER CODE END EXTI9_5_IRQn 1 */

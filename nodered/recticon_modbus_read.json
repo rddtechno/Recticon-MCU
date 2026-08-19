@@ -1,0 +1,335 @@
+[
+    {
+        "id": "recticon_tab",
+        "type": "tab",
+        "label": "Recticon - Modbus Master",
+        "disabled": false,
+        "info": "Membaca controller Recticon (STM32F412) lewat Modbus RTU.\n\nJALUR: UART TTL 3V3 Orange Pi Zero3 <-> USART1 STM32\nSLAVE: alamat 10, 38400 8-N-1\n\nSEBELUM DEPLOY:\n1. Pasang node: node-red-contrib-modbus\n2. Sesuaikan `serialPort` di node config \"Recticon RTU\".\n   Di Orange Pi Zero3 biasanya /dev/ttyS1, tapi WAJIB dicek:\n     ls -l /dev/ttyS*\n3. Beri izin akses port ke user node-red:\n     sudo usermod -aG dialout $USER   (lalu logout/login)\n4. Pastikan tidak ada getty yang memakai port itu:\n     sudo systemctl disable --now serial-getty@ttyS1.service\n"
+    },
+    {
+        "id": "recticon_client",
+        "type": "modbus-client",
+        "name": "Recticon RTU",
+        "clienttype": "serial",
+        "bufferCommands": true,
+        "stateLogEnabled": false,
+        "queueLogEnabled": false,
+        "failureLogEnabled": true,
+        "tcpHost": "127.0.0.1",
+        "tcpPort": "502",
+        "tcpType": "DEFAULT",
+        "serialPort": "/dev/ttyS1",
+        "serialType": "RTU-BUFFERD",
+        "serialBaudrate": "38400",
+        "serialDatabits": "8",
+        "serialStopbits": "1",
+        "serialParity": "none",
+        "serialConnectionDelay": "100",
+        "serialAsciiResponseStartDelimiter": "0x3A",
+        "unit_id": "10",
+        "commandDelay": "50",
+        "clientTimeout": "1000",
+        "reconnectOnTimeout": true,
+        "reconnectTimeout": "2000",
+        "parallelUnitIdsAllowed": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "showLogs": false
+    },
+    {
+        "id": "note_setup",
+        "type": "comment",
+        "z": "recticon_tab",
+        "name": "BACA DULU - penyesuaian wajib",
+        "info": "1. serialPort di node \"Recticon RTU\" harus dicocokkan dengan port\n   yang benar-benar ada di Orange Pi.  Cek: ls -l /dev/ttyS*\n\n2. Slave STM32 memakai alamat 10 dan 38400 8-N-1.  Kalau salah satu\n   tidak cocok, gejalanya SAMA: timeout, tanpa pesan yang membedakan.\n\n3. Nilai ukur dikirim sebagai int16 BERTANDA berskala x100.  Library\n   Modbus mengembalikannya sebagai uint16, jadi konversi tanda WAJIB\n   dilakukan di function node - lihat node \"Urai Input Register\".\n   Tanpa itu, arus -1.5 A akan terbaca 654.36 A.",
+        "x": 190,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "read_ir",
+        "type": "modbus-read",
+        "z": "recticon_tab",
+        "name": "Input Register 0-11 (ukur)",
+        "topic": "ukur",
+        "showStatusActivities": false,
+        "logIOActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "unitid": "10",
+        "dataType": "InputRegister",
+        "adr": "0",
+        "quantity": "12",
+        "rate": "1",
+        "rateUnit": "s",
+        "delayOnStart": true,
+        "startDelayTime": "2",
+        "server": "recticon_client",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": true,
+        "x": 190,
+        "y": 120,
+        "wires": [
+            [
+                "fn_ir"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "fn_ir",
+        "type": "function",
+        "z": "recticon_tab",
+        "name": "Urai Input Register",
+        "func": "// msg.payload = array 12 nilai uint16 dari slave.\n//\n// PENTING: enam register pertama adalah int16 BERTANDA berskala x100.\n// Library Modbus mengembalikan word mentah sebagai uint16, jadi tanda\n// harus dipulihkan sendiri. Tanpa ini, -1.5 A terbaca sebagai 654.36 A\n// dan tidak ada yang tampak error.\nconst r = msg.payload;\n\nif (!Array.isArray(r) || r.length < 12) {\n    node.warn('Jawaban tidak lengkap: ' + JSON.stringify(r));\n    return null;\n}\n\nconst s16 = (v) => (v > 32767) ? v - 65536 : v;\nconst bit = (w, b) => ((w >> b) & 1) === 1;\n\nconst st = r[8];\n\nmsg.payload = {\n    rectifier: {\n        voltage: s16(r[0]) / 100,\n        current: s16(r[1]) / 100\n    },\n    baterai: {\n        voltage: s16(r[2]) / 100,\n        current: s16(r[3]) / 100\n    },\n    load: {\n        voltage: s16(r[4]) / 100,\n        current: s16(r[5]) / 100\n    },\n    di_word: r[6],\n    do_word: r[7],\n    device: {\n        eeprom:    bit(st, 0),\n        ads1115:   bit(st, 1),\n        mcp4725:   bit(st, 2),\n        ioexp_do:  bit(st, 3),\n        ioexp_di:  bit(st, 4),\n        ads131m04: bit(st, 5),\n        adc_run:   bit(st, 6),\n        semua_ok:  (st & 0x7F) === 0x7F\n    },\n    adc_sps: r[9],\n    adc_overrun: r[10],\n    uptime_s: r[11]\n};\n\nmsg.topic = 'recticon/ukur';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 470,
+        "y": 120,
+        "wires": [
+            [
+                "dbg_ukur"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_ukur",
+        "type": "debug",
+        "z": "recticon_tab",
+        "name": "Ukur",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 690,
+        "y": 120,
+        "wires": []
+    },
+    {
+        "id": "read_di",
+        "type": "modbus-read",
+        "z": "recticon_tab",
+        "name": "Discrete Input 0-15 (DI)",
+        "topic": "di",
+        "showStatusActivities": false,
+        "logIOActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "unitid": "10",
+        "dataType": "Input",
+        "adr": "0",
+        "quantity": "16",
+        "rate": "1",
+        "rateUnit": "s",
+        "delayOnStart": true,
+        "startDelayTime": "3",
+        "server": "recticon_client",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": true,
+        "x": 190,
+        "y": 200,
+        "wires": [
+            [
+                "fn_di"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "fn_di",
+        "type": "function",
+        "z": "recticon_tab",
+        "name": "Urai Digital Input",
+        "func": "// msg.payload = array 16 boolean.\n// Indeks 0-7  -> GPA0..GPA7 chip MCP23S17 digital input\n// Indeks 8-15 -> GPB0..GPB7\nconst b = msg.payload;\n\nif (!Array.isArray(b) || b.length < 16) {\n    node.warn('Jawaban DI tidak lengkap: ' + JSON.stringify(b));\n    return null;\n}\n\nmsg.payload = {\n    gpa: b.slice(0, 8),\n    gpb: b.slice(8, 16)\n};\n\nmsg.topic = 'recticon/di';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 460,
+        "y": 200,
+        "wires": [
+            [
+                "dbg_di"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_di",
+        "type": "debug",
+        "z": "recticon_tab",
+        "name": "DI",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 690,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "read_coil",
+        "type": "modbus-read",
+        "z": "recticon_tab",
+        "name": "Coil 0-7 (relay DO)",
+        "topic": "do",
+        "showStatusActivities": false,
+        "logIOActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "unitid": "10",
+        "dataType": "Coil",
+        "adr": "0",
+        "quantity": "8",
+        "rate": "2",
+        "rateUnit": "s",
+        "delayOnStart": true,
+        "startDelayTime": "4",
+        "server": "recticon_client",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": true,
+        "x": 170,
+        "y": 280,
+        "wires": [
+            [
+                "fn_coil"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "fn_coil",
+        "type": "function",
+        "z": "recticon_tab",
+        "name": "Urai Coil",
+        "func": "// msg.payload = array 8 boolean -> GPA0..GPA7 chip MCP23S17 digital output\nconst b = msg.payload;\n\nif (!Array.isArray(b) || b.length < 8) {\n    node.warn('Jawaban coil tidak lengkap: ' + JSON.stringify(b));\n    return null;\n}\n\nmsg.payload = { relay: b.slice(0, 8) };\nmsg.topic = 'recticon/do';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 280,
+        "wires": [
+            [
+                "dbg_do"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_do",
+        "type": "debug",
+        "z": "recticon_tab",
+        "name": "DO",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 690,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "read_hr",
+        "type": "modbus-read",
+        "z": "recticon_tab",
+        "name": "Holding Register 0-2 (setelan)",
+        "topic": "setelan",
+        "showStatusActivities": false,
+        "logIOActivities": false,
+        "showErrors": true,
+        "showWarnings": true,
+        "unitid": "10",
+        "dataType": "HoldingRegister",
+        "adr": "0",
+        "quantity": "3",
+        "rate": "5",
+        "rateUnit": "s",
+        "delayOnStart": true,
+        "startDelayTime": "5",
+        "server": "recticon_client",
+        "useIOFile": false,
+        "ioFile": "",
+        "useIOForPayload": false,
+        "emptyMsgOnFail": true,
+        "x": 200,
+        "y": 360,
+        "wires": [
+            [
+                "fn_hr"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "fn_hr",
+        "type": "function",
+        "z": "recticon_tab",
+        "name": "Urai Holding Register",
+        "func": "// msg.payload = array 3 nilai uint16.\n// Ketiganya tidak bertanda, jadi tidak perlu konversi seperti input register.\nconst r = msg.payload;\n\nif (!Array.isArray(r) || r.length < 3) {\n    node.warn('Jawaban HR tidak lengkap: ' + JSON.stringify(r));\n    return null;\n}\n\nmsg.payload = {\n    dac_setpoint: r[0],   // 0..4095\n    do_word:      r[1],   // bitmap 8 relay\n    slave_addr:   r[2]    // semestinya 10 - kalau bukan, port-nya bukan yang kita kira\n};\n\nmsg.topic = 'recticon/setelan';\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 480,
+        "y": 360,
+        "wires": [
+            [
+                "dbg_hr"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_hr",
+        "type": "debug",
+        "z": "recticon_tab",
+        "name": "Setelan",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 700,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "note_diag",
+        "type": "comment",
+        "z": "recticon_tab",
+        "name": "Diagnosa - kalau tidak ada data",
+        "info": "Cek di sisi STM32 lewat Live Expressions:\n\n  g_mb_opi.rx_frame_count   naik?  -> permintaan sampai\n  g_mb_opi.tx_frame_count   naik?  -> jawaban terkirim\n  g_mb_opi.crc_err_count    naik?  -> frame rusak, biasanya baud beda\n  g_mb_opi.not_for_us_count naik?  -> alamat tidak cocok\n  g_mb_opi.last_exception          -> 2 = alamat register di luar peta\n\nKalau rx_frame_count DIAM sama sekali: kabel TX/RX kemungkinan\ntertukar, atau port serial di Node-RED salah.  TX Orange Pi harus\nke PA10 (USART1_RX) STM32, dan RX Orange Pi ke PA9 (USART1_TX).",
+        "x": 200,
+        "y": 440,
+        "wires": []
+    }
+]

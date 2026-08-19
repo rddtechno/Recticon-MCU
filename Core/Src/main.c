@@ -24,6 +24,10 @@
 #include "eeprom_24lc08.h"
 #include "ads1115.h"
 #include "mcp4725.h"
+#include "mcp23s17.h"
+#include "ads131m04.h"
+#include "modbus_slave.h"
+#include "modbus_master.h"
 #include "i2c_scan.h"
 /* USER CODE END Includes */
 
@@ -155,6 +159,47 @@ int main(void)
 
   g_ads_present = (uint8_t)(ADS_IsReady() ? 1U : 0U);
   g_dac_present = (uint8_t)(MCP_IsReady() ? 1U : 0U);
+
+  /* --- SPI3: MCP23S17 chip Digital Output (CS=PA15, RST=PA12) ---
+       8 kanal relay di PORT A (GPA0..GPA7), dikendalikan lewat array g_do[].
+       Baca hasilnya di Live Expressions:
+         g_dout_present     -> 1 = self-test SPI lulus (tulis-baca register)
+         g_dout_last_result -> 0 = IOX_OK
+         g_dout_iocon_rb    -> harus 0x00
+       Setelah ini semua kanal jadi output dengan nilai 0. */
+  (void)DOUT_Init(&hspi3);
+
+  /* --- SPI3: MCP23S17 chip Digital Input (CS=PD2, RST=PB3) ---
+       16 kanal: PORT A -> g_di_a[0..7], PORT B -> g_di_b[0..7].
+       Pull-up internal aktif semua (g_di_pullup = 0xFFFF), polling tiap
+       g_di_poll_ms. Baca g_di_present / g_di_last_result untuk statusnya. */
+  (void)DIN_Init(&hspi3);
+
+  /* --- SPI1: ADS131M04 (CS=PC9, RST=PB9, DRDY=PA8) ---
+       4 kanal simultan: Rect V/I dan Batt V/I. Akuisisi dipicu DRDY lalu
+       dibaca DMA; init sekaligus menyalakan akuisisi.
+       Bring-up - baca di Live Expressions:
+         g_adc_present      -> 1 = tulis-baca register terverifikasi
+         g_adc_sps_measured -> laju sampel NYATA, menjawab CLKIN board
+         g_adc_id_reg       -> ID mentah, dicatat untuk dokumentasi */
+  (void)ADC_Init(&hspi1);
+
+  /* --- USART6: Modbus RTU Slave untuk HMI (RS485, DE=PC8, 38400 8-N-1) ---
+       Alamat slave default 1. Batas frame dideteksi lewat IDLE line UART.
+       Pantau di Live Expressions: g_mb_hmi.rx_frame_count / tx_frame_count /
+       crc_err_count / last_fc / last_exception. */
+  MB_HmiInit(&huart6);
+
+  /* --- USART2: Modbus RTU Master (RS485, DE=PA4, 9600 8-N-1) ---
+       Polling Power Meter ADE7868A tiap g_mbm_poll_ms. Hasil terurai ada di
+       g_pm_phase[0..2], g_pm_frequency, g_pm_energy_wh[]. Status jalur:
+       g_pm_online / g_pm_timeout_count / g_pm_last_exception. */
+  MBM_Init(&huart2);
+
+  /* --- USART1: Modbus RTU Slave untuk Orange Pi Zero3 (TTL 3V3, 38400 8-N-1) ---
+       Tanpa transceiver, jadi tidak ada pin DE. Berbagi peta register yang
+       sama persis dengan slave HMI - g_mb_input[] dan g_mb_hold[]. */
+  MB_OpiInit(&huart1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -172,6 +217,24 @@ int main(void)
 
     /* Ikuti perubahan g_dac_setpoint + eksekusi g_dac_cmd */
     MCP_Task();
+
+    /* Ikuti perubahan g_do[0..7] + eksekusi g_dout_cmd */
+    DOUT_Task();
+
+    /* Polling 16 kanal digital input + eksekusi g_di_cmd */
+    DIN_Task();
+
+    /* Rata-rata + konversi hasil ADS131M04 + eksekusi g_adc_cmd */
+    ADC_Task();
+
+    /* Layani permintaan Modbus dari HMI */
+    MB_HmiTask();
+
+    /* Layani permintaan Modbus dari Orange Pi */
+    MB_OpiTask();
+
+    /* Polling Power Meter + ST36 lewat Modbus master */
+    MBM_Task();
 
     /* IWDG aktif sejak MX_IWDG_Init() dengan timeout ~32.8 s. Tanpa refresh
        ini board reset sendiri secara periodik. */
@@ -711,8 +774,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
   HAL_GPIO_Init(DI_BTN_OK_PM1_ZX_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DI_BTN_BCK_Pin DI_BTN_DN_Pin DI_MCB_BTS_Pin DI_MCB_VSAT_Pin */
-  GPIO_InitStruct.Pin = DI_BTN_BCK_Pin|DI_BTN_DN_Pin|DI_MCB_BTS_Pin|DI_MCB_VSAT_Pin;
+  /*Configure GPIO pins : DI_BTN_BCK_Pin DI_BTN_DN_Pin */
+  GPIO_InitStruct.Pin = DI_BTN_BCK_Pin|DI_BTN_DN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -754,13 +817,159 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DO_IOEXP_DI_CS_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : DI_IOEXP_INTA_Pin DI_IOEXP_INTB_Pin */
+  GPIO_InitStruct.Pin = DI_IOEXP_INTA_Pin|DI_IOEXP_INTB_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 10, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 10, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief  Callback EXTI bersama untuk SELURUH pin interrupt di board.
+  *
+  * HAL hanya menyediakan satu callback untuk semua jalur EXTI, jadi
+  * pembagiannya dilakukan di sini - bukan di dalam masing-masing driver -
+  * supaya penambahan sumber interrupt berikutnya (DRDY ADS131M04 di PA8)
+  * cukup menambah satu cabang tanpa mengubah driver yang sudah jalan.
+  *
+  * Isi callback harus tetap pendek: driver hanya menandai flag, transaksi
+  * bus dikerjakan di main loop.
+  *
+  * @param  GPIO_Pin pin yang memicu interrupt
+  */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  switch (GPIO_Pin)
+  {
+    case DI_IOEXP_INTA_Pin:   /* PB4 - INTA MCP23S17 digital input (port A) */
+    case DI_IOEXP_INTB_Pin:   /* PB5 - INTB MCP23S17 digital input (port B) */
+      DIN_OnInterrupt(GPIO_Pin);
+      break;
+
+    case DI_ADC_DRDY_Pin:     /* PA8 - DRDY ADS131M04, 1 frame siap dibaca  */
+      ADC_OnDrdy();
+      break;
+
+    default:
+      break;
+  }
+}
+
+/**
+  * @brief  Callback DMA transfer SPI selesai.
+  *
+  * Sama seperti EXTI, HAL cuma punya satu simbol callback untuk semua handle
+  * SPI - kalau tiap driver mendefinisikannya sendiri akan bentrok saat link.
+  * Jadi pembagiannya di sini, berdasarkan instance.
+  *
+  * @param  hspi handle SPI yang menyelesaikan transfer
+  */
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1)
+  {
+    ADC_OnFrameComplete();
+  }
+}
+
+/**
+  * @brief  Callback error SPI - lepaskan CS supaya bus tidak tertinggal
+  *         dalam kondisi setengah jalan.
+  */
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1)
+  {
+    ADC_OnSpiError();
+  }
+}
+
+/**
+  * @brief  Frame UART selesai - dipicu IDLE line atau buffer penuh.
+  *         Inilah pembatas frame Modbus RTU di project ini.
+  * @param  Size jumlah byte yang diterima
+  */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART6)
+  {
+    MB_SlaveOnRxEvent(&g_mb_hmi, Size);
+  }
+  else if (huart->Instance == USART2)
+  {
+    MBM_OnRxEvent(Size);
+  }
+  else if (huart->Instance == USART1)
+  {
+    MB_SlaveOnRxEvent(&g_mb_opi, Size);
+  }
+  else
+  {
+    /* tidak ada UART lain yang dipakai */
+  }
+}
+
+/**
+  * @brief  Transmisi UART selesai.
+  *
+  * HAL memanggil ini setelah flag TC, bukan TXE - jadi aman menurunkan DE
+  * transceiver RS485 di sini tanpa memotong byte terakhir.
+  */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART6)
+  {
+    MB_SlaveOnTxComplete(&g_mb_hmi);
+  }
+  else if (huart->Instance == USART2)
+  {
+    MBM_OnTxComplete();
+  }
+  else if (huart->Instance == USART1)
+  {
+    MB_SlaveOnTxComplete(&g_mb_opi);
+  }
+  else
+  {
+    /* tidak ada UART lain yang dipakai */
+  }
+}
+
+/**
+  * @brief  Error UART (framing / overrun / noise).
+  *
+  * Di jalur RS485 hal ini wajar terjadi. Yang penting penerimaan di-arm
+  * ulang - tanpa itu slave jadi tuli permanen setelah satu derau.
+  */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART6)
+  {
+    MB_SlaveOnUartError(&g_mb_hmi);
+  }
+  else if (huart->Instance == USART2)
+  {
+    MBM_OnUartError();
+  }
+  else if (huart->Instance == USART1)
+  {
+    MB_SlaveOnUartError(&g_mb_opi);
+  }
+  else
+  {
+    /* tidak ada UART lain yang dipakai */
+  }
+}
 
 /* USER CODE END 4 */
 
